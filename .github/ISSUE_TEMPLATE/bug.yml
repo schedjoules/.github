@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a bug
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: product
+    attributes:
+      label: Product
+      options:
+        - "schedjoules-app (iOS)"
+        - "event-discovery-backend"
+        - "Other"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: What should have happened
+    validations:
+      required: true
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+  - type: input
+    id: app-version
+    attributes:
+      label: App version / environment
+    validations:
+      required: false

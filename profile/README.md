@@ -1,0 +1,1 @@
+SchedJoules builds calendar subscription infrastructure. Our repos: [schedjoules-app](https://github.com/schedjoules/schedjoules-app) (iOS), [event-discovery-backend](https://github.com/schedjoules/event-discovery-backend) (API).

@@ -1,0 +1,45 @@
+name: Experiment
+description: Define a new experiment with hypothesis and scope
+labels: ["experiment"]
+body:
+  - type: textarea
+    id: problem-statement
+    attributes:
+      label: Problem statement
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: "If we [change], then [metric] will [improve] because [reason]"
+    validations:
+      required: true
+  - type: dropdown
+    id: appetite
+    attributes:
+      label: Appetite
+      options:
+        - "1 week"
+        - "2 weeks"
+        - "1 cycle (6 weeks)"
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+    validations:
+      required: true
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of scope
+    validations:
+      required: false
+  - type: textarea
+    id: definition-of-done
+    attributes:
+      label: Definition of done
+    validations:
+      required: true
