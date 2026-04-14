@@ -1,0 +1,123 @@
+name: Project Board Automation
+
+on:
+  workflow_call:
+    secrets:
+      PROJECT_TOKEN:
+        required: true
+
+jobs:
+  update-project-status:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update project board status
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const event = context.eventName;
+            const action = context.payload.action;
+
+            // Determine target status based on event
+            let targetStatus;
+            if (event === 'issues' && action === 'assigned') {
+              targetStatus = 'In Progress';
+            } else if (event === 'issues' && action === 'closed') {
+              targetStatus = 'Done';
+            } else if (event === 'issues' && action === 'reopened') {
+              targetStatus = 'In Progress';
+            } else if (event === 'pull_request' && action === 'closed' && context.payload.pull_request.merged) {
+              targetStatus = 'Done';
+            } else {
+              console.log(`No status mapping for ${event}.${action}, skipping`);
+              return;
+            }
+
+            const contentId = event === 'pull_request'
+              ? context.payload.pull_request.node_id
+              : context.payload.issue.node_id;
+
+            console.log(`Event: ${event}.${action} → Target: ${targetStatus}`);
+
+            // Find all projects this item belongs to
+            const query = `
+              query($contentId: ID!) {
+                node(id: $contentId) {
+                  ... on Issue {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project {
+                          id
+                          title
+                          field(name: "Status") {
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              options { id name }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  ... on PullRequest {
+                    projectItems(first: 10) {
+                      nodes {
+                        id
+                        project {
+                          id
+                          title
+                          field(name: "Status") {
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              options { id name }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const result = await github.graphql(query, { contentId });
+            const items = result.node?.projectItems?.nodes || [];
+
+            if (items.length === 0) {
+              console.log('Item is not on any project board, skipping');
+              return;
+            }
+
+            for (const item of items) {
+              const statusField = item.project.field;
+              if (!statusField?.options) continue;
+
+              const option = statusField.options.find(o => o.name === targetStatus);
+              if (!option) {
+                console.log(`"${item.project.title}" has no "${targetStatus}" option, skipping`);
+                continue;
+              }
+
+              console.log(`Updating "${item.project.title}" → ${targetStatus}`);
+
+              await github.graphql(`
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId
+                    itemId: $itemId
+                    fieldId: $fieldId
+                    value: { singleSelectOptionId: $optionId }
+                  }) {
+                    projectV2Item { id }
+                  }
+                }
+              `, {
+                projectId: item.project.id,
+                itemId: item.id,
+                fieldId: statusField.id,
+                optionId: option.id
+              });
+            }
+
+            console.log('Done');
