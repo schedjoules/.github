@@ -1,0 +1,43 @@
+name: PR Auto-Assign
+
+on:
+  workflow_call:
+
+jobs:
+  auto-assign:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Assign author to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              console.log('No pull_request payload, nothing to do.');
+              return;
+            }
+
+            // Skip if author is a bot (Dependabot, etc.)
+            if (pr.user.type === 'Bot') {
+              console.log(`Author ${pr.user.login} is a bot, skipping.`);
+              return;
+            }
+
+            // Skip if already assigned
+            if (pr.assignees && pr.assignees.length > 0) {
+              console.log('PR already has assignees, skipping.');
+              return;
+            }
+
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              assignees: [pr.user.login]
+            });
+
+            console.log(`Assigned ${pr.user.login} to PR #${pr.number}`);
