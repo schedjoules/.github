@@ -18,106 +18,208 @@ jobs:
             const event = context.eventName;
             const action = context.payload.action;
 
-            // Determine target status based on event
+            // Decide what this event means for the board.
+            //
+            // - Issue opened / assigned: no status write. Assignment is
+            //   ownership, not progress. Opened leaves the default column.
+            // - Issue closed: Done.
+            // - Issue reopened: In Progress.
+            // - PR opened / reopened (incl. drafts): In Progress for the PR
+            //   and every issue referenced in the PR body.
+            // - PR merged (closed with merged === true): Done for the PR and
+            //   every referenced issue.
             let targetStatus;
-            if (event === 'issues' && action === 'assigned') {
-              targetStatus = 'In Progress';
-            } else if (event === 'issues' && action === 'closed') {
-              targetStatus = 'Done';
-            } else if (event === 'issues' && action === 'reopened') {
-              targetStatus = 'In Progress';
-            } else if (event === 'pull_request' && action === 'closed' && context.payload.pull_request.merged) {
-              targetStatus = 'Done';
+            let parsePrReferences = false;
+
+            if (event === 'issues') {
+              if (action === 'closed') {
+                targetStatus = 'Done';
+              } else if (action === 'reopened') {
+                targetStatus = 'In Progress';
+              } else {
+                console.log(`No status mapping for issues.${action}, skipping`);
+                return;
+              }
+            } else if (event === 'pull_request') {
+              if (action === 'opened' || action === 'reopened') {
+                targetStatus = 'In Progress';
+                parsePrReferences = true;
+              } else if (action === 'closed' && context.payload.pull_request.merged) {
+                targetStatus = 'Done';
+                parsePrReferences = true;
+              } else {
+                console.log(`No status mapping for pull_request.${action}, skipping`);
+                return;
+              }
             } else {
               console.log(`No status mapping for ${event}.${action}, skipping`);
               return;
             }
 
-            const contentId = event === 'pull_request'
-              ? context.payload.pull_request.node_id
-              : context.payload.issue.node_id;
-
             console.log(`Event: ${event}.${action} → Target: ${targetStatus}`);
 
-            // Find all projects this item belongs to
-            const query = `
-              query($contentId: ID!) {
-                node(id: $contentId) {
-                  ... on Issue {
-                    projectItems(first: 10) {
-                      nodes {
-                        id
-                        project {
-                          id
-                          title
-                          field(name: "Status") {
-                            ... on ProjectV2SingleSelectField {
-                              id
-                              options { id name }
-                            }
-                          }
-                        }
-                      }
-                    }
+            // Collect node IDs to move: the PR or issue itself, plus every
+            // issue referenced from a PR body via a closing/refs keyword.
+            const targets = [];
+
+            if (event === 'pull_request') {
+              targets.push({
+                label: `PR #${context.payload.pull_request.number}`,
+                nodeId: context.payload.pull_request.node_id,
+              });
+
+              if (parsePrReferences) {
+                const body = context.payload.pull_request.body || '';
+                const refs = parseIssueReferences(body, context.repo);
+                for (const ref of refs) {
+                  const nodeId = await resolveIssueNodeId(ref);
+                  if (!nodeId) {
+                    console.log(`Issue ${ref.owner}/${ref.repo}#${ref.number} not found, skipping`);
+                    continue;
                   }
-                  ... on PullRequest {
-                    projectItems(first: 10) {
-                      nodes {
-                        id
-                        project {
-                          id
-                          title
-                          field(name: "Status") {
-                            ... on ProjectV2SingleSelectField {
-                              id
-                              options { id name }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
+                  targets.push({
+                    label: `${ref.owner}/${ref.repo}#${ref.number}`,
+                    nodeId,
+                  });
                 }
               }
-            `;
-
-            const result = await github.graphql(query, { contentId });
-            const items = result.node?.projectItems?.nodes || [];
-
-            if (items.length === 0) {
-              console.log('Item is not on any project board, skipping');
-              return;
-            }
-
-            for (const item of items) {
-              const statusField = item.project.field;
-              if (!statusField?.options) continue;
-
-              const option = statusField.options.find(o => o.name === targetStatus);
-              if (!option) {
-                console.log(`"${item.project.title}" has no "${targetStatus}" option, skipping`);
-                continue;
-              }
-
-              console.log(`Updating "${item.project.title}" → ${targetStatus}`);
-
-              await github.graphql(`
-                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
-                  updateProjectV2ItemFieldValue(input: {
-                    projectId: $projectId
-                    itemId: $itemId
-                    fieldId: $fieldId
-                    value: { singleSelectOptionId: $optionId }
-                  }) {
-                    projectV2Item { id }
-                  }
-                }
-              `, {
-                projectId: item.project.id,
-                itemId: item.id,
-                fieldId: statusField.id,
-                optionId: option.id
+            } else {
+              targets.push({
+                label: `Issue #${context.payload.issue.number}`,
+                nodeId: context.payload.issue.node_id,
               });
             }
 
+            // Deduplicate by nodeId in case a PR body references itself or
+            // lists the same issue twice.
+            const seen = new Set();
+            const uniqueTargets = targets.filter(t => {
+              if (seen.has(t.nodeId)) return false;
+              seen.add(t.nodeId);
+              return true;
+            });
+
+            for (const target of uniqueTargets) {
+              await moveOnBoards(target, targetStatus);
+            }
+
             console.log('Done');
+
+            // --- helpers ---
+
+            function parseIssueReferences(body, defaultRepo) {
+              // Match Closes|Fixes|Resolves|Refs followed by optional
+              // owner/repo and #N. Bare #N without a keyword is ignored.
+              const regex = /\b(?:closes|fixes|resolves|refs)\s+(?:([\w.-]+)\/([\w.-]+))?#(\d+)/gi;
+              const refs = [];
+              const seenRefs = new Set();
+              let m;
+              while ((m = regex.exec(body)) !== null) {
+                const owner = m[1] || defaultRepo.owner;
+                const repo = m[2] || defaultRepo.repo;
+                const number = parseInt(m[3], 10);
+                const key = `${owner}/${repo}#${number}`;
+                if (seenRefs.has(key)) continue;
+                seenRefs.add(key);
+                refs.push({ owner, repo, number });
+              }
+              return refs;
+            }
+
+            async function resolveIssueNodeId(ref) {
+              try {
+                const result = await github.graphql(`
+                  query($owner: String!, $name: String!, $number: Int!) {
+                    repository(owner: $owner, name: $name) {
+                      issueOrPullRequest: issue(number: $number) { id }
+                    }
+                  }
+                `, { owner: ref.owner, name: ref.repo, number: ref.number });
+                return result.repository?.issueOrPullRequest?.id || null;
+              } catch (err) {
+                console.log(`Lookup failed for ${ref.owner}/${ref.repo}#${ref.number}: ${err.message}`);
+                return null;
+              }
+            }
+
+            async function moveOnBoards(target, status) {
+              const query = `
+                query($contentId: ID!) {
+                  node(id: $contentId) {
+                    ... on Issue {
+                      projectItems(first: 10) {
+                        nodes {
+                          id
+                          project {
+                            id
+                            title
+                            field(name: "Status") {
+                              ... on ProjectV2SingleSelectField {
+                                id
+                                options { id name }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                    ... on PullRequest {
+                      projectItems(first: 10) {
+                        nodes {
+                          id
+                          project {
+                            id
+                            title
+                            field(name: "Status") {
+                              ... on ProjectV2SingleSelectField {
+                                id
+                                options { id name }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const result = await github.graphql(query, { contentId: target.nodeId });
+              const items = result.node?.projectItems?.nodes || [];
+
+              if (items.length === 0) {
+                console.log(`${target.label} not on any project board, skipping`);
+                return;
+              }
+
+              for (const item of items) {
+                const statusField = item.project.field;
+                if (!statusField?.options) continue;
+
+                const option = statusField.options.find(o => o.name === status);
+                if (!option) {
+                  console.log(`"${item.project.title}" has no "${status}" option, skipping ${target.label}`);
+                  continue;
+                }
+
+                console.log(`Updating "${item.project.title}" for ${target.label} → ${status}`);
+
+                await github.graphql(`
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(input: {
+                      projectId: $projectId
+                      itemId: $itemId
+                      fieldId: $fieldId
+                      value: { singleSelectOptionId: $optionId }
+                    }) {
+                      projectV2Item { id }
+                    }
+                  }
+                `, {
+                  projectId: item.project.id,
+                  itemId: item.id,
+                  fieldId: statusField.id,
+                  optionId: option.id,
+                });
+              }
+            }
