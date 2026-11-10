@@ -26,8 +26,9 @@ jobs:
             // - Issue reopened: In Progress.
             // - PR opened / reopened (incl. drafts): In Progress for the PR
             //   and every issue referenced in the PR body.
-            // - PR merged (closed with merged === true): Done for the PR and
-            //   every referenced issue.
+            // - PR merged (closed with merged === true): Done for the PR only.
+            //   A reference in the PR body does not say the issue is finished,
+            //   and a board that closes items on Done would close it anyway.
             let targetStatus;
             let parsePrReferences = false;
 
@@ -46,7 +47,6 @@ jobs:
                 parsePrReferences = true;
               } else if (action === 'closed' && context.payload.pull_request.merged) {
                 targetStatus = 'Done';
-                parsePrReferences = true;
               } else {
                 console.log(`No status mapping for pull_request.${action}, skipping`);
                 return;
