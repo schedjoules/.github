@@ -37,7 +37,7 @@ Here is how the full setup works:
 1. Pick up your assigned issue
 2. Read the spec carefully
 3. Build on a feature branch
-4. Open a PR with `Refs #N` linking to the issue. Use `Closes #N` only in the PR description when the issue is fully resolved.
+4. Open a PR with `Refs #N` linking to the issue. Use `Closes #N` only in the PR description when the issue is fully resolved. A reference leaves the issue open and in its column on the board; the issue reaches Done when it is closed.
 5. If the implementation matches the spec: done
 6. If the implementation deviates: check the deviation flag and explain in one line
 
