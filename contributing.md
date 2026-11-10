@@ -49,5 +49,5 @@ Here is how the full setup works:
 ## PR rules
 
 - One concern per PR
-- Always link the issue with `Closes #N`
+- Link the issue with `Refs #N`; write `Closes #N` only in the PR that finishes the issue, because GitHub closes the issue when that PR merges
 - No direct pushes to main
